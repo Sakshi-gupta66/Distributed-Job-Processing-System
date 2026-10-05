@@ -28,7 +28,10 @@ def worker():
 
     while True:
 
-        result = redis_client.blpop("job_queue", timeout=0)
+        result = redis_client.blpop(
+            "job_queue",
+            timeout=0
+        )
 
         job_id = result[1]
 
@@ -43,6 +46,15 @@ def worker():
                 print(f"Job {job_id} not found in database")
                 continue
 
+            # Idempotency check
+            if job.status == "SUCCESS":
+                print(
+                    f"Job {job_id} already completed. "
+                    f"Skipping execution."
+                )
+                continue
+
+            # Mark job as processing
             job.status = "PROCESSING"
             job.started_at = datetime.now(timezone.utc)
             job.attempts += 1
@@ -54,8 +66,10 @@ def worker():
                 f"(attempt {job.attempts})"
             )
 
+            # Execute job
             output = process_job(job)
 
+            # Save successful result
             job.status = "SUCCESS"
             job.result = output
             job.error = None
@@ -63,7 +77,9 @@ def worker():
 
             db.commit()
 
-            print(f"Job completed successfully: {job_id}")
+            print(
+                f"Job completed successfully: {job_id}"
+            )
 
         except Exception as e:
 
@@ -77,7 +93,10 @@ def worker():
 
                 db.commit()
 
-                redis_client.rpush("job_queue", job.id)
+                redis_client.rpush(
+                    "job_queue",
+                    job.id
+                )
 
                 print(
                     f"Job requeued: {job.id} "

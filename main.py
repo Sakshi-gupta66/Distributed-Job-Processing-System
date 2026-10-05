@@ -1,15 +1,26 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import Base, SessionLocal, engine
+from database import SessionLocal, engine, Base
 from models import Job
 from redis_client import redis_client
 
 
-app = FastAPI(title="Distributed Job Processing Platform")
-
 Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+
+class JobRequest(BaseModel):
+    job_type: str
+    parameters: dict
+    idempotency_key: str
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
 
 
 def get_db():
@@ -20,25 +31,29 @@ def get_db():
         db.close()
 
 
-class JobRequest(BaseModel):
-    job_type: str
-    parameters: dict
-
-
-class JobResponse(BaseModel):
-    job_id: str
-    status: str
-
-
 @app.post("/jobs", response_model=JobResponse)
 def create_job(
     job_request: JobRequest,
     db: Session = Depends(get_db)
 ):
-    # 1. Create job in PostgreSQL
+    # Check whether this idempotency key was already used
+    existing_job = (
+        db.query(Job)
+        .filter(Job.idempotency_key == job_request.idempotency_key)
+        .first()
+    )
+
+    if existing_job:
+        return JobResponse(
+            job_id=existing_job.id,
+            status=existing_job.status
+        )
+
+    # Create new job
     job = Job(
         job_type=job_request.job_type,
         parameters=job_request.parameters,
+        idempotency_key=job_request.idempotency_key,
         status="PENDING"
     )
 
@@ -46,8 +61,10 @@ def create_job(
     db.commit()
     db.refresh(job)
 
-    # 2. Put job ID into Redis queue
+    # Add job to Redis queue
     redis_client.rpush("job_queue", job.id)
+
+    print(f"Job queued: {job.id}")
 
     return JobResponse(
         job_id=job.id,
@@ -55,7 +72,7 @@ def create_job(
     )
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", response_model=JobResponse)
 def get_job(
     job_id: str,
     db: Session = Depends(get_db)
@@ -63,20 +80,10 @@ def get_job(
     job = db.get(Job, job_id)
 
     if job is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found"
-        )
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Job not found")
 
-    return {
-        "job_id": job.id,
-        "job_type": job.job_type,
-        "parameters": job.parameters,
-        "status": job.status,
-        "attempts": job.attempts,
-        "result": job.result,
-        "error": job.error,
-        "created_at": job.created_at,
-        "started_at": job.started_at,
-        "completed_at": job.completed_at
-    }
+    return JobResponse(
+        job_id=job.id,
+        status=job.status
+    )

@@ -1,7 +1,7 @@
+import uuid
 from datetime import datetime, timezone
-from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Integer, String
+from sqlalchemy import DateTime, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -10,13 +10,28 @@ from database import Base
 class Job(Base):
     __tablename__ = "jobs"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_job_idempotency_key"
+        ),
+    )
+
     id: Mapped[str] = mapped_column(
         String,
         primary_key=True,
-        default=lambda: str(uuid4())
+        default=lambda: str(uuid.uuid4())
     )
 
-    job_type: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(
+        String,
+        nullable=False
+    )
+
+    job_type: Mapped[str] = mapped_column(
+        String,
+        nullable=False
+    )
 
     parameters: Mapped[dict] = mapped_column(
         JSON,
@@ -25,14 +40,12 @@ class Job(Base):
 
     status: Mapped[str] = mapped_column(
         String,
-        default="PENDING",
-        nullable=False
+        default="PENDING"
     )
 
     attempts: Mapped[int] = mapped_column(
         Integer,
-        default=0,
-        nullable=False
+        default=0
     )
 
     result: Mapped[dict | None] = mapped_column(
@@ -47,7 +60,7 @@ class Job(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc)
     )
 
     started_at: Mapped[datetime | None] = mapped_column(
